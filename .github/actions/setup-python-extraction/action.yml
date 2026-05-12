@@ -1,0 +1,90 @@
+name: Setup Python Translation Extraction
+description: >
+  Clones openedx-translations and the source repo, installs Python dependencies,
+  extracts translation source files, and validates compilation.
+
+inputs:
+  branch:
+    description: The openedx-translations branch to check out
+    required: true
+  repo:
+    description: The repository name to extract translations from
+    required: true
+  ref:
+    description: The git ref to use for the source repository (leave blank for default branch)
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    # Clones the openedx-translations repo
+    - name: clone openedx/openedx-translations
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ inputs.branch }}
+
+    # Installs gettext, a dependency for extracting translation source files in django
+    - name: install gettext
+      run: sudo apt install -y gettext
+      shell: bash
+
+    # Clones the  repository
+    - name: clone ${{ github.repository_owner }}/${{ inputs.repo }}
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ github.repository_owner }}/${{ inputs.repo }}
+        ref: ${{ inputs.ref }}
+        path: translations/${{ inputs.repo }}
+
+    - name: prepare the environment with edx-platform specific changes
+      if: ${{ inputs.repo == 'edx-platform' }}
+      run: |
+        # This is needed for edx-platform base.txt packages
+        sudo apt install -y libxml2-dev libxmlsec1-dev libxslt1-dev
+
+        # There is a theme directory with it's own conf/locale directory, we need to remove that
+        rm -rf translations/${{ inputs.repo }}/themes/conf
+      shell: bash
+
+    # Setup Python
+    - name: setup python
+      uses: actions/setup-python@v5
+      id: setup_python
+      with:
+        python-version: '3.12'
+        cache: pip
+        # The `edx-platf*rm` wildcard will be expanded to `edx-platform` if its requirement file exists,
+        # otherwise it will be omitted
+        cache-dependency-path: |
+          requirements/translations.txt
+          translations/edx-platf*rm/requirements/edx/base.txt
+
+    # Installs Python requirements from translations.txt
+    - name: install requirements
+      run: |
+        # Install requirements for all packages
+        pip install -r requirements/translations.txt
+
+        EDX_BASE_REQS=translations/edx-platform/requirements/edx/base.txt
+        if test -f $EDX_BASE_REQS; then
+          # Install edx-platform specific apps (e.g. wiki) which is required to extract translations from
+          pip install -r $EDX_BASE_REQS
+        fi
+      shell: bash
+
+    # Extracts the translation source files
+    - name: extract translation source files
+      run: |
+        cd translations/${{ inputs.repo }}
+        make extract_translations
+      env:
+        IS_OPENEDX_TRANSLATIONS_WORKFLOW: yes
+      shell: bash
+
+    # Validate compilation of translation source files
+    - name: validate compilation of translation source files
+      run: |
+        cd translations/${{ inputs.repo }}
+        django-admin compilemessages --locale en
+      shell: bash
